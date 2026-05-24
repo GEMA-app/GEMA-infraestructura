@@ -53,6 +53,28 @@ services:
       start_period: 30s
 
   # ---------------------------------------------------------------------------
+  # CACHÉ - Redis 7
+  # Usado por el backend para caché de sesiones, rate-limiting y tareas async.
+  # El puerto 6379 NO está expuesto al host en producción; solo es accesible
+  # internamente a través de "gema-network".
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: gema_redis
+    restart: unless-stopped
+    networks:
+      - gema-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # En producción, monta un volumen para persistencia RDB/AOF si lo necesitas:
+    # volumes:
+    #   - gema_redis_data:/data
+
+  # ---------------------------------------------------------------------------
   # BACKEND - FastAPI (Python + Poetry)
   # Build desde el repo hermano gema-backend/
   # Expone el puerto 8000. La documentación automática de la API estará en:
@@ -79,6 +101,13 @@ services:
         # El backend espera a que la DB esté SALUDABLE antes de arrancar.
         # Esto evita errores de "connection refused" al iniciar el stack.
         condition: service_healthy
+      redis:
+        # El backend también espera a que Redis esté listo.
+        condition: service_healthy
+    networks:
+      - gema-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health/live || exit 1"]
     networks:
       - gema-network
     healthcheck:
