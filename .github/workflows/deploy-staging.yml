@@ -1,0 +1,103 @@
+# =============================================================================
+# GEMA - Gestión Estratégica de Mantenimiento de Activos
+# GitHub Actions Workflow: Deploy to Staging
+# =============================================================================
+# Este workflow se activa automáticamente en cada push a la rama "develop".
+# Despliega el stack completo en el servidor de staging via SSH.
+#
+# SECRETS REQUERIDOS en GitHub (Settings → Secrets and variables → Actions):
+#   SERVER_IP        → IP o hostname del servidor de staging
+#   SSH_USER         → Usuario SSH con acceso al servidor
+#   SSH_PRIVATE_KEY  → Clave privada SSH (contenido del archivo ~/.ssh/id_rsa)
+#
+# CONFIGURACIÓN DEL SERVIDOR:
+#   1. Añade la clave pública SSH al servidor: ~/.ssh/authorized_keys
+#   2. Clona los tres repos en el servidor con la misma estructura de carpetas
+#   3. Crea el archivo .env en gema-infraestructura/ con las variables de staging
+# =============================================================================
+
+name: Deploy to Staging
+
+on:
+  push:
+    branches:
+      - develop
+
+# Evita deploys concurrentes. Si hay uno en curso, cancela el anterior.
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy Stack to Staging Server
+    runs-on: ubuntu-latest
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Paso 1: Mostrar información del deploy para trazabilidad
+      # -----------------------------------------------------------------------
+      - name: Show deploy info
+        run: |
+          echo "🚀 Deploying GEMA to Staging"
+          echo "   Branch  : ${{ github.ref_name }}"
+          echo "   Commit  : ${{ github.sha }}"
+          echo "   Actor   : ${{ github.actor }}"
+          echo "   Server  : ${{ secrets.SERVER_IP }}"
+
+      # -----------------------------------------------------------------------
+      # Paso 2: Configurar el agente SSH con la clave privada
+      # -----------------------------------------------------------------------
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          # Agrega el servidor al known_hosts para evitar prompts interactivos
+          ssh-keyscan -H "${{ secrets.SERVER_IP }}" >> ~/.ssh/known_hosts
+
+      # -----------------------------------------------------------------------
+      # Paso 3: Conectar al servidor y ejecutar el deploy
+      # -----------------------------------------------------------------------
+      - name: Deploy via SSH
+        run: |
+          ssh -o StrictHostKeyChecking=no \
+              "${{ secrets.SSH_USER }}@${{ secrets.SERVER_IP }}" \
+              'bash -s' << 'ENDSSH'
+
+            set -e  # Aborta si cualquier comando falla
+
+            echo "📦 Pulling latest code from all repositories..."
+
+            # Actualiza el código de los tres repos en paralelo
+            cd ~/proyectos/gema-backend     && git pull origin develop &
+            cd ~/proyectos/gema-frontend    && git pull origin develop &
+            cd ~/proyectos/gema-infraestructura && git pull origin develop &
+
+            # Espera a que todos los git pull terminen
+            wait
+            echo "✅ All repositories updated"
+
+            # Entra al directorio de infraestructura y levanta el stack
+            cd ~/proyectos/gema-infraestructura
+
+            echo "🐳 Building and starting Docker services..."
+            docker compose up -d --build --remove-orphans
+
+            echo "🧹 Cleaning up unused Docker images..."
+            docker image prune -f
+
+            echo ""
+            echo "✅ Deploy to STAGING completed successfully!"
+            echo "   Frontend : http://$HOSTNAME:3000"
+            echo "   Backend  : http://$HOSTNAME:8000"
+            echo "   API Docs : http://$HOSTNAME:8000/docs"
+
+          ENDSSH
+
+      # -----------------------------------------------------------------------
+      # Paso 4: Limpiar la clave SSH del runner
+      # -----------------------------------------------------------------------
+      - name: Cleanup SSH key
+        if: always()  # Siempre ejecuta este paso, incluso si el deploy falla
+        run: rm -f ~/.ssh/id_rsa
