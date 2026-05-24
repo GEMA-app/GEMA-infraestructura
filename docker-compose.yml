@@ -1,0 +1,175 @@
+# =============================================================================
+# GEMA - Gestión Estratégica de Mantenimiento de Activos
+# Docker Compose - Orquestación de servicios
+# =============================================================================
+# Arquitectura Polyrepo: este archivo asume que los repos hermanos están
+# clonados en paralelo en la misma carpeta padre:
+#
+#   /proyectos/
+#     ├── gema-backend/
+#     ├── gema-frontend/
+#     └── gema-infraestructura/   ← aquí
+#
+# Uso: docker compose up --build
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # BASE DE DATOS - PostgreSQL 15
+  # NOTA DE SEGURIDAD: El puerto 5432 NO está expuesto al host en producción.
+  # Solo es accesible internamente a través de "gema-network".
+  # Para desarrollo local, descomenta la sección "ports" si necesitas acceso
+  # directo con un cliente SQL (DBeaver, pgAdmin, etc.).
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:15-alpine
+    container_name: gema_db
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Estas variables sobreescriben las del .env si las defines aquí también.
+      # Asegúrate de que POSTGRES_DB, POSTGRES_USER y POSTGRES_PASSWORD
+      # estén definidas en tu archivo .env.
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      # Volumen nombrado para persistencia de datos. Los datos sobreviven
+      # reinicios y re-builds del contenedor.
+      - gema_postgres_data:/var/lib/postgresql/data
+    networks:
+      - gema-network
+    # Puerto comentado por seguridad: la DB NO debe estar expuesta en producción.
+    # Descomenta SOLO en entorno de desarrollo local si necesitas acceso externo.
+    # ports:
+    #   - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # BACKEND - FastAPI (Python + Poetry)
+  # Build desde el repo hermano gema-backend/
+  # Expone el puerto 8000. La documentación automática de la API estará en:
+  #   http://localhost:8000/docs  (Swagger UI)
+  #   http://localhost:8000/redoc (ReDoc)
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ../gema-backend
+      dockerfile: Dockerfile
+    container_name: gema_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Aseguramos que el backend pueda conectarse a la DB usando el
+      # nombre del servicio "db" como hostname (resolución DNS interna de Docker).
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        # El backend espera a que la DB esté SALUDABLE antes de arrancar.
+        # Esto evita errores de "connection refused" al iniciar el stack.
+        condition: service_healthy
+    networks:
+      - gema-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Si necesitas montar el código fuente para hot-reload en desarrollo,
+    # descomenta el volumen siguiente (requiere ajuste en el Dockerfile del backend):
+    # volumes:
+    #   - ../gema-backend:/app
+
+  # ---------------------------------------------------------------------------
+  # FRONTEND - Next.js (React)
+  # Build desde el repo hermano gema-frontend/
+  # Expone el puerto 3000.
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ../gema-frontend
+      dockerfile: Dockerfile
+    container_name: gema_frontend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # URL pública de la API. En producción, cambia esto a tu dominio real.
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - gema-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # REVERSE PROXY - Nginx
+  # Punto de entrada único para todo el tráfico HTTP/HTTPS.
+  # Rutas configuradas:
+  #   /api/  → backend:8000
+  #   /      → frontend:3000
+  # Ver ./nginx/nginx.conf para la configuración completa.
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    container_name: gema_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Configuración de Nginx
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Directorio para certificados SSL (Let's Encrypt).
+      # Descomenta cuando configures HTTPS:
+      # - /etc/letsencrypt:/etc/letsencrypt:ro
+      # - ./nginx/certbot:/var/www/certbot:ro
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - gema-network
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t && curl -f http://localhost/health-nginx || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# =============================================================================
+# VOLÚMENES - Persistencia de datos
+# =============================================================================
+volumes:
+  gema_postgres_data:
+    # Volumen gestionado por Docker. Los datos persisten entre reinicios.
+    # Para hacer backup: docker volume inspect gema_postgres_data
+    driver: local
+
+# =============================================================================
+# REDES - Comunicación interna entre servicios
+# =============================================================================
+networks:
+  gema-network:
+    # Red bridge personalizada. Permite que los contenedores se comuniquen
+    # entre sí usando sus nombres de servicio como hostnames (ej: "db", "backend").
+    driver: bridge
+    name: gema-network
