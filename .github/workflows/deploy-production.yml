@@ -1,0 +1,121 @@
+# =============================================================================
+# GEMA - Gestión Estratégica de Mantenimiento de Activos
+# GitHub Actions Workflow: Deploy to Production
+# =============================================================================
+# Este workflow se activa automáticamente en cada push a la rama "main".
+# Despliega el stack completo en el servidor de producción via SSH.
+#
+# ⚠️  IMPORTANTE: Este workflow afecta el entorno de PRODUCCIÓN.
+#     Asegúrate de que el código en "main" ha sido probado en staging antes.
+#     Se recomienda proteger la rama "main" con reglas de branch protection
+#     y requerir pull requests con revisión de código.
+#
+# SECRETS REQUERIDOS en GitHub (Settings → Secrets and variables → Actions):
+#   PROD_SERVER_IP        → IP o hostname del servidor de producción
+#   PROD_SSH_USER         → Usuario SSH del servidor de producción
+#   PROD_SSH_PRIVATE_KEY  → Clave privada SSH para el servidor de producción
+#
+# RECOMENDACIÓN: Usa una clave SSH diferente para producción vs staging.
+# =============================================================================
+
+name: Deploy to Production
+
+on:
+  push:
+    branches:
+      - main
+
+# Evita deploys concurrentes en producción. NO cancela el deploy en curso,
+# lo pone en cola para garantizar que ningún deploy se pierda.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy Stack to Production Server
+    runs-on: ubuntu-latest
+    environment: production  # Requiere aprobación manual si está configurado en GitHub
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Paso 1: Mostrar información del deploy para trazabilidad
+      # -----------------------------------------------------------------------
+      - name: Show deploy info
+        run: |
+          echo "🚀 Deploying GEMA to PRODUCTION"
+          echo "   Branch  : ${{ github.ref_name }}"
+          echo "   Commit  : ${{ github.sha }}"
+          echo "   Actor   : ${{ github.actor }}"
+          echo "   Server  : ${{ secrets.PROD_SERVER_IP }}"
+          echo ""
+          echo "⚠️  This is a PRODUCTION deployment. Handle with care."
+
+      # -----------------------------------------------------------------------
+      # Paso 2: Configurar el agente SSH con la clave privada de producción
+      # -----------------------------------------------------------------------
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PROD_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${{ secrets.PROD_SERVER_IP }}" >> ~/.ssh/known_hosts
+
+      # -----------------------------------------------------------------------
+      # Paso 3: Conectar al servidor de producción y ejecutar el deploy
+      # -----------------------------------------------------------------------
+      - name: Deploy via SSH
+        run: |
+          ssh -o StrictHostKeyChecking=no \
+              "${{ secrets.PROD_SSH_USER }}@${{ secrets.PROD_SERVER_IP }}" \
+              'bash -s' << 'ENDSSH'
+
+            set -e  # Aborta si cualquier comando falla
+
+            echo "📦 Pulling latest code from all repositories..."
+
+            # Actualiza el código de los tres repos en paralelo
+            cd ~/proyectos/gema-backend     && git pull origin main &
+            cd ~/proyectos/gema-frontend    && git pull origin main &
+            cd ~/proyectos/gema-infraestructura && git pull origin main &
+
+            # Espera a que todos los git pull terminen
+            wait
+            echo "✅ All repositories updated"
+
+            # Entra al directorio de infraestructura
+            cd ~/proyectos/gema-infraestructura
+
+            echo "🐳 Building and starting Docker services..."
+            # --no-deps asegura que los servicios que no cambiaron no se reinicien innecesariamente
+            docker compose up -d --build --remove-orphans
+
+            echo "🧹 Cleaning up unused Docker images..."
+            docker image prune -f
+
+            echo ""
+            echo "✅ Deploy to PRODUCTION completed successfully!"
+
+          ENDSSH
+
+      # -----------------------------------------------------------------------
+      # Paso 4: Limpiar la clave SSH del runner
+      # -----------------------------------------------------------------------
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_rsa
+
+      # -----------------------------------------------------------------------
+      # Paso 5 (opcional): Notificación de deploy exitoso
+      # Descomenta y configura para enviar notificaciones a Slack, Discord, etc.
+      # -----------------------------------------------------------------------
+      # - name: Notify deployment success
+      #   if: success()
+      #   uses: slackapi/slack-github-action@v1.24.0
+      #   with:
+      #     payload: |
+      #       {
+      #         "text": "✅ GEMA deployed to Production successfully!\nCommit: ${{ github.sha }}\nActor: ${{ github.actor }}"
+      #       }
+      #   env:
+      #     SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
