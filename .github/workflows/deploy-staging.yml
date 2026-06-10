@@ -70,19 +70,21 @@ jobs:
             echo "📦 Pulling latest code from all repositories..."
 
             # Actualiza el código de los tres repos en paralelo
-            cd ~/proyectos/gema-backend     && git pull origin develop &
-            cd ~/proyectos/gema-frontend    && git pull origin develop &
-            cd ~/proyectos/gema-infraestructura && git pull origin develop &
+            cd /opt/gema/GEMA-backend     && git pull origin develop &
+            cd /opt/gema/GEMA-frontend    && git pull origin develop &
+            cd /opt/gema/GEMA-infraestructura && git pull origin develop &
 
             # Espera a que todos los git pull terminen
             wait
             echo "✅ All repositories updated"
 
             # Entra al directorio de infraestructura y levanta el stack
-            cd ~/proyectos/gema-infraestructura
+            cd /opt/gema/GEMA-infraestructura
 
             echo "🐳 Building and starting Docker services..."
-            docker compose up -d --build --remove-orphans
+            docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
+            echo "🗄️ Running database migrations..."
+            docker compose -f docker-compose.prod.yml exec -T backend alembic upgrade head
 
             echo "🧹 Cleaning up unused Docker images..."
             docker image prune -f

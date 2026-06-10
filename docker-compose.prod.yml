@@ -1,0 +1,172 @@
+# =============================================================================
+# GEMA - Gestión Estratégica de Mantenimiento de Activos
+# Docker Compose - PRODUCCIÓN
+# =============================================================================
+# Diferencias clave respecto a docker-compose.yml (desarrollo):
+#   - Frontend activado y construido desde GEMA-frontend/
+#   - Nginx enruta tráfico a backend Y frontend
+#   - Puerto 8000 del backend NO expuesto al host (solo accesible por Nginx)
+#   - Redis con volumen persistente activado
+#   - Variables de entorno apuntan a producción
+#
+# Uso en el servidor:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Requisitos previos en el servidor:
+#   - Repos clonados en paralelo:
+#       /opt/gema/GEMA-backend/
+#       /opt/gema/GEMA-frontend/
+#       /opt/gema/GEMA-infraestructura/   ← aquí
+#   - Archivo .env creado desde .env.example con valores reales
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # BASE DE DATOS - PostgreSQL 15
+  # Puerto 5432 NO expuesto al host. Solo accesible internamente.
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:15-alpine
+    container_name: gema_db
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - gema_postgres_data:/var/lib/postgresql/data
+    networks:
+      - gema-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # CACHÉ - Redis 7
+  # Con volumen persistente activado para producción.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: gema_redis
+    restart: unless-stopped
+    networks:
+      - gema-network
+    volumes:
+      - gema_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # BACKEND - FastAPI
+  # Puerto 8000 NO expuesto al host. Solo Nginx puede accederlo internamente.
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ../GEMA-backend
+      dockerfile: Dockerfile
+    container_name: gema_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - gema-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health/live || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ---------------------------------------------------------------------------
+  # FRONTEND - Next.js
+  # Puerto 3000 NO expuesto al host. Solo Nginx puede accederlo internamente.
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ../GEMA-frontend
+      dockerfile: Dockerfile
+    container_name: gema_frontend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - gema-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # REVERSE PROXY - Nginx
+  # Único punto de entrada. Puertos 80 y 443 expuestos al exterior.
+  # Enruta:
+  #   /api/ → backend:8000
+  #   /     → frontend:3000
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    container_name: gema_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Descomentar cuando Let's Encrypt esté configurado:
+      # - /etc/letsencrypt:/etc/letsencrypt:ro
+      # - ./nginx/certbot:/var/www/certbot:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    networks:
+      - gema-network
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t && curl -f http://localhost/health-nginx || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# =============================================================================
+# VOLÚMENES
+# =============================================================================
+volumes:
+  gema_postgres_data:
+    driver: local
+  gema_redis_data:
+    driver: local
+
+# =============================================================================
+# REDES
+# =============================================================================
+networks:
+  gema-network:
+    driver: bridge
+    name: gema-network
