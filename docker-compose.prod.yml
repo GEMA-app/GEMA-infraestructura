@@ -41,7 +41,7 @@ services:
     networks:
       - gema-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -60,7 +60,7 @@ services:
     volumes:
       - gema_redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -90,7 +90,7 @@ services:
     networks:
       - gema-network
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/health/live || exit 1"]
+      test: [ "CMD-SHELL", "curl -f http://localhost:8000/salud/activo || exit 1" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -116,7 +116,7 @@ services:
     networks:
       - gema-network
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:3000 || exit 1"]
+      test: [ "CMD-SHELL", "curl -f http://localhost:3000 || exit 1" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -149,7 +149,7 @@ services:
     networks:
       - gema-network
     healthcheck:
-      test: ["CMD-SHELL", "nginx -t && curl -f http://localhost/health-nginx || exit 1"]
+      test: [ "CMD-SHELL", "nginx -t && curl -f http://localhost/health-nginx || exit 1" ]
       interval: 30s
       timeout: 10s
       retries: 3
