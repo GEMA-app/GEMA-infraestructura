@@ -112,7 +112,7 @@ services:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
     depends_on:
       backend:
-        condition: service_healthy
+        condition: service_started
     networks:
       - gema-network
     healthcheck:
@@ -143,9 +143,9 @@ services:
       # - ./nginx/certbot:/var/www/certbot:ro
     depends_on:
       backend:
-        condition: service_healthy
+        condition: service_started
       frontend:
-        condition: service_healthy
+        condition: service_started
     networks:
       - gema-network
     healthcheck:
